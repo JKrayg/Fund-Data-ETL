@@ -1,40 +1,103 @@
 import yfinance as yf
 import pandas as pd
+import numpy as np
 import uuid
+import json
 from db.db_connection import connect
-from db.create_tables import create_tbls, drop_tbls
+from db.schema import create_tables, drop_tables
+from etl.clean import clean, fix_echange_rate, currency_to_usd
 
 
-drop_tbls()
-create_tbls()
-
-rsp_holdings = pd.read_csv(
-    'data\invesco_s&p_500_equal_weight_etf-monthly_holdings.csv',
-    index_col=None, na_values='NA')[:-1]
+# drop_tables()
+# create_tables()
 
 
-# create pandas df of security data
-rsp_holdings = rsp_holdings[:-4]
-rsp_sec= rsp_holdings[['Company', 'Ticker']]
-rsp_sec = rsp_sec.rename(columns={'Ticker': 'symbol', 'Company': 'name'})
-rsp_sec.insert(0, 'security_key', [str(uuid.uuid4()) for _ in range(rsp_sec.shape[0])])
+def tsv_to_df(filename, limit):
+    if limit == 0:
+        return pd.read_csv(
+            filename, sep='\t',
+            low_memory=False, index_col=None, na_values='NULL')
+    else:
+        return pd.read_csv(
+            filename, sep='\t',
+            low_memory=False, index_col=None, na_values='NULL',
+            nrows=limit)
+    
 
 # connect to sql
-connection = connect()
-cursor = connection.cursor()
+# connection = connect()
+# cursor = connection.cursor()
 
-# insert security data into securities table
-query = "INSERT INTO securities (security_key, name, symbol) VALUES (%s, %s, %s)"
-cursor.executemany(query, rsp_sec.values.tolist())
-connection.commit()
+reported_holdings = tsv_to_df('data/form_nport/FUND_REPORTED_HOLDING.tsv', 300000)
+reported_holdings = clean(reported_holdings)
+
+# print(json.dumps(reported_holdings.iloc[0:10].to_dict(), indent=4))
+reported_holdings = reported_holdings.drop(['derivative_cat', 'fair_value_level',
+                                            'is_restricted_security', 'other_issuer',
+                                            'other_asset', 'payoff_profile',
+                                            'issuer_title'], axis=1)
+
+print()
+
+
+assets = tsv_to_df('data/form_nport/IDENTIFIERS.tsv', 0)
+assets = clean(assets)
+
+# grab assets present in reported holdings batch
+assets = assets[assets['asset_key'].isin(reported_holdings['asset_key'])]
+assets = assets[['asset_key', 'asset_id', 'asset_symbol']]
+
+assets = assets.merge(reported_holdings[['asset_key', 'asset_name',
+                                         'asset_category', 'asset_type',
+                                         'asset_lei', 'asset_cusip'
+                                        ]], on='asset_key', how='left')
+
+# insert assets data into assets table
+query = ("INSERT INTO dim_assets "
+        "(asset_key, asset_id, asset_symbol, "
+        "asset_name, asset_category, asset_type, "
+        "asset_lei, asset_cusip) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)")
+# cursor.executemany(query, assets.values.tolist())
+# connection.commit()
+
+
+funds = tsv_to_df('data/form_nport/FUND_REPORTED_INFO.tsv', 0)
+funds = clean(funds)
+funds = funds[funds['fund_key'].isin(reported_holdings['fund_key'])]
+funds = funds[['fund_key', 'fund_name', 'fund_id',
+                       'fund_lei', 'total_assets', 'total_liabilities',
+                       'net_assets', 'assets_misc_security',
+                       'assets_invested']]
+
+# insert funds data into funds table
+# funds = funds.drop('accession_number', axis=1)
+query = ("INSERT INTO dim_funds "
+        "(fund_key, fund_name, fund_id, fund_lei, total_assets,"
+        " total_liabilities, net_assets, assets_misc_security, assets_invested)"
+        " VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)")
+# cursor.executemany(query, funds.values.tolist())
+# connection.commit()
+
+reported_holdings.insert(2, 'asset_id', assets['asset_id'])
+reported_holdings = reported_holdings.drop(['asset_name', 'asset_lei',
+                                            'asset_cusip', 'asset_category',
+                                            'asset_type'], axis=1)
+
+reported_holdings = fix_echange_rate(reported_holdings)
+reported_holdings = currency_to_usd(reported_holdings)
+print(reported_holdings.iloc[0:20])
 
 
 
 
 
-# tickers = ' '.join(rsp_holdings.['Ticker'].to_list())
-# prices = yf.download(tickers, period='1d')
-# closing_prices = prices['Close']
+# connection.close()
+
+
+# invesco_sp_500 = yf.Ticker('SPHQ')
+# print(json.dumps(invesco_sp_500.info, indent=4))
+# sphq_name = invesco_sp_500.info.get('shortName')
+# closing_prices = invesco_sp_500['Close']
 
 
 
