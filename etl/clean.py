@@ -28,7 +28,7 @@ def clean(df):
     return df
 
 
-def fix_echange_rate(df):
+def fix_exchange_rate(df):
     df.loc[(df['exchange_rate'].isna()), 'exchange_rate'] = 1
     df.loc[(df['exchange_rate'] == 0), 'exchange_rate'] = 1
     # df.loc[(df['currency_code'].isna()), 'exchange_rate'] = 0
